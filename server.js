@@ -36,7 +36,7 @@ function nextSeat(room) {
 
 function playersPayload(room) {
   return [...room.players.values()]
-    .map(p => ({ name: p.name, seat: p.seat, host: p.host, ready: p.ready }))
+    .map(p => ({ name: p.name, seat: p.seat, host: p.host, ready: p.ready, skin: p.skin || 'white' }))
     .sort((a, b) => a.seat - b.seat);
 }
 
@@ -75,7 +75,7 @@ wss.on("connection", (ws, req) => {
       const seat = nextSeat(room);
       if (seat === -1) { ws.send(JSON.stringify({ t: "error", message: "Lobby full" })); return; }
       const isHost = room.players.size === 0;
-      room.players.set(ws, { name: String(msg.name || "Player").slice(0, 12), seat, host: isHost, ready: false });
+      room.players.set(ws, { name: String(msg.name || "Player").slice(0, 12), seat, host: isHost, ready: false, skin: String(msg.skin || "white").slice(0, 20) });
       ws.send(JSON.stringify({ t: "players", players: playersPayload(room), you: seat }));
       broadcast(room, { t: "players", players: playersPayload(room) });
       return;
