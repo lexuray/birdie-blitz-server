@@ -16,8 +16,70 @@
 
 const http = require("http");
 const { WebSocketServer } = require("ws");
+const fs = require("fs");
+const path = require("path");
 
 const PORT = process.env.PORT || 10000;   // Render sets PORT for you
+
+// ============================================================================
+// GLOBAL LEADERBOARD
+// Tracks each player's lifetime birdies and their best (lowest) round score.
+// Stored in memory + mirrored to a JSON file so it survives within an instance.
+// NOTE: Render's FREE tier has an ephemeral disk, so a full server restart can
+// reset this. For permanent storage you'd add a database; this is the free-tier
+// version and is plenty for a friends leaderboard.
+// ============================================================================
+const LB_FILE = path.join(__dirname, "leaderboard.json");
+// board: name(lowercased) -> { name, birdies, bestRound, rounds, updated }
+let board = {};
+try {
+  if (fs.existsSync(LB_FILE)) board = JSON.parse(fs.readFileSync(LB_FILE, "utf8")) || {};
+} catch { board = {}; }
+
+let lbSaveTimer = null;
+function saveBoard() {
+  // debounce writes so we don't hammer the disk
+  if (lbSaveTimer) return;
+  lbSaveTimer = setTimeout(() => {
+    lbSaveTimer = null;
+    try { fs.writeFileSync(LB_FILE, JSON.stringify(board)); } catch {}
+  }, 1500);
+}
+
+function cleanName(n) {
+  return String(n || "Player").replace(/[^\w \-]/g, "").trim().slice(0, 14) || "Player";
+}
+
+// merge a submission into the board. birdies are ADDED (incremental since last submit);
+// bestRound keeps the lowest ever seen. Returns the updated entry.
+function submitScore({ name, birdies, bestRound }) {
+  const nm = cleanName(name);
+  const key = nm.toLowerCase();
+  const e = board[key] || { name: nm, birdies: 0, bestRound: null, rounds: 0, updated: 0 };
+  e.name = nm;   // keep latest casing
+  const addB = Math.max(0, Math.min(50, parseInt(birdies, 10) || 0));   // cap per-submit to deter abuse
+  e.birdies += addB;
+  if (bestRound != null) {
+    const br = parseInt(bestRound, 10);
+    // round score is relative to par, so it can be negative (under par = better). Range-check only.
+    if (!isNaN(br) && br > -100 && br < 200) {
+      if (e.bestRound == null || br < e.bestRound) e.bestRound = br;
+    }
+  }
+  e.rounds += 1;
+  e.updated = Date.now();
+  board[key] = e;
+  saveBoard();
+  return e;
+}
+
+// top N by birdies (then by best round as a tiebreak)
+function topBoard(n = 50) {
+  return Object.values(board)
+    .sort((a, b) => (b.birdies - a.birdies) || ((a.bestRound || 999) - (b.bestRound || 999)))
+    .slice(0, n)
+    .map(e => ({ name: e.name, birdies: e.birdies, bestRound: e.bestRound, rounds: e.rounds }));
+}
 
 // rooms: code -> { started:boolean, players: Map<ws, {name,seat,host,ready}> }
 const rooms = new Map();
@@ -48,8 +110,36 @@ function broadcast(room, obj, exceptWs) {
   }
 }
 
-// plain HTTP server: health check at / so Render sees the service as "live"
+// plain HTTP server: health check at / plus the leaderboard API
 const server = http.createServer((req, res) => {
+  // allow the game (served from Netlify/your domain) to call these endpoints
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+  if (req.method === "OPTIONS") { res.writeHead(204); res.end(); return; }
+
+  const url = (req.url || "/").split("?")[0];
+
+  // GET /leaderboard  → top players as JSON
+  if (req.method === "GET" && url === "/leaderboard") {
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify({ board: topBoard(50) }));
+    return;
+  }
+
+  // POST /leaderboard  → submit { name, birdies, bestRound }
+  if (req.method === "POST" && url === "/leaderboard") {
+    let body = "";
+    req.on("data", c => { body += c; if (body.length > 4000) req.destroy(); });
+    req.on("end", () => {
+      let data; try { data = JSON.parse(body || "{}"); } catch { data = {}; }
+      const entry = submitScore(data);
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ ok: true, you: { name: entry.name, birdies: entry.birdies, bestRound: entry.bestRound }, board: topBoard(50) }));
+    });
+    return;
+  }
+
   res.writeHead(200, { "content-type": "text/plain" });
   res.end("Birdie Blitz multiplayer server is running.");
 });
