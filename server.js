@@ -52,13 +52,16 @@ function cleanName(n) {
 
 // merge a submission into the board. birdies are ADDED (incremental since last submit);
 // bestRound keeps the lowest ever seen. Returns the updated entry.
-function submitScore({ name, birdies, bestRound }) {
+function submitScore({ name, birdies, bestRound, holes }) {
   const nm = cleanName(name);
   const key = nm.toLowerCase();
-  const e = board[key] || { name: nm, birdies: 0, bestRound: null, rounds: 0, updated: 0 };
+  const e = board[key] || { name: nm, birdies: 0, bestRound: null, rounds: 0, holes: 0, updated: 0 };
   e.name = nm;   // keep latest casing
+  if (e.holes == null) e.holes = 0;   // migrate older entries
   const addB = Math.max(0, Math.min(50, parseInt(birdies, 10) || 0));   // cap per-submit to deter abuse
   e.birdies += addB;
+  const addH = Math.max(0, Math.min(500, parseInt(holes, 10) || 0));    // holes played since last submit
+  e.holes += addH;
   if (bestRound != null) {
     const br = parseInt(bestRound, 10);
     // round score is relative to par, so it can be negative (under par = better). Range-check only.
@@ -78,7 +81,7 @@ function topBoard(n = 50) {
   return Object.values(board)
     .sort((a, b) => (b.birdies - a.birdies) || ((a.bestRound || 999) - (b.bestRound || 999)))
     .slice(0, n)
-    .map(e => ({ name: e.name, birdies: e.birdies, bestRound: e.bestRound, rounds: e.rounds }));
+    .map(e => ({ name: e.name, birdies: e.birdies, bestRound: e.bestRound, rounds: e.rounds, holes: e.holes || 0 }));
 }
 
 // rooms: code -> { started:boolean, players: Map<ws, {name,seat,host,ready}> }
@@ -135,7 +138,7 @@ const server = http.createServer((req, res) => {
       let data; try { data = JSON.parse(body || "{}"); } catch { data = {}; }
       const entry = submitScore(data);
       res.writeHead(200, { "content-type": "application/json" });
-      res.end(JSON.stringify({ ok: true, you: { name: entry.name, birdies: entry.birdies, bestRound: entry.bestRound }, board: topBoard(50) }));
+      res.end(JSON.stringify({ ok: true, you: { name: entry.name, birdies: entry.birdies, bestRound: entry.bestRound, holes: entry.holes || 0 }, board: topBoard(50) }));
     });
     return;
   }
