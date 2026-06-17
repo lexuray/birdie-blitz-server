@@ -52,7 +52,7 @@ function cleanName(n) {
 
 // merge a submission into the board. birdies are ADDED (incremental since last submit);
 // bestRound keeps the lowest ever seen. Returns the updated entry.
-function submitScore({ name, birdies, bestRound, holes }) {
+function submitScore({ name, birdies, bestRound, holes, register }) {
   const nm = cleanName(name);
   const key = nm.toLowerCase();
   const e = board[key] || { name: nm, birdies: 0, bestRound: null, rounds: 0, holes: 0, updated: 0 };
@@ -69,15 +69,17 @@ function submitScore({ name, birdies, bestRound, holes }) {
       if (e.bestRound == null || br < e.bestRound) e.bestRound = br;
     }
   }
-  e.rounds += 1;
+  // a pure presence/registration submit (no birdies, no holes, no round) shouldn't count as a round
+  if (!register && (addB > 0 || addH > 0 || bestRound != null)) e.rounds += 1;
   e.updated = Date.now();
   board[key] = e;
   saveBoard();
   return e;
 }
 
-// top N by birdies (then by best round as a tiebreak)
-function topBoard(n = 50) {
+// FULL board: every registered player, sorted by birdies (best round as tiebreak).
+// n defaults high so nobody is cut off as the player base grows.
+function topBoard(n = 500) {
   return Object.values(board)
     .sort((a, b) => (b.birdies - a.birdies) || ((a.bestRound || 999) - (b.bestRound || 999)))
     .slice(0, n)
@@ -126,7 +128,7 @@ const server = http.createServer((req, res) => {
   // GET /leaderboard  → top players as JSON
   if (req.method === "GET" && url === "/leaderboard") {
     res.writeHead(200, { "content-type": "application/json" });
-    res.end(JSON.stringify({ board: topBoard(50) }));
+    res.end(JSON.stringify({ board: topBoard() }));
     return;
   }
 
@@ -138,7 +140,7 @@ const server = http.createServer((req, res) => {
       let data; try { data = JSON.parse(body || "{}"); } catch { data = {}; }
       const entry = submitScore(data);
       res.writeHead(200, { "content-type": "application/json" });
-      res.end(JSON.stringify({ ok: true, you: { name: entry.name, birdies: entry.birdies, bestRound: entry.bestRound, holes: entry.holes || 0 }, board: topBoard(50) }));
+      res.end(JSON.stringify({ ok: true, you: { name: entry.name, birdies: entry.birdies, bestRound: entry.bestRound, holes: entry.holes || 0 }, board: topBoard() }));
     });
     return;
   }
