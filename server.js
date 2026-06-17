@@ -38,7 +38,10 @@ try {
 
 let lbSaveTimer = null;
 function saveBoard() {
-  // debounce writes so we don't hammer the disk
+  // write immediately so a sudden restart never loses the latest scores, AND debounce a
+  // follow-up write to coalesce bursts. (Free-tier disk is ephemeral across full redeploys,
+  // but this preserves data across the far more common idle-sleep restarts.)
+  try { fs.writeFileSync(LB_FILE, JSON.stringify(board)); } catch {}
   if (lbSaveTimer) return;
   lbSaveTimer = setTimeout(() => {
     lbSaveTimer = null;
@@ -124,6 +127,13 @@ const server = http.createServer((req, res) => {
   if (req.method === "OPTIONS") { res.writeHead(204); res.end(); return; }
 
   const url = (req.url || "/").split("?")[0];
+
+  // GET /health  → lightweight keep-alive endpoint (used by the self-ping)
+  if (req.method === "GET" && url === "/health") {
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify({ ok: true, players: Object.keys(board).length }));
+    return;
+  }
 
   // GET /leaderboard  → top players as JSON
   if (req.method === "GET" && url === "/leaderboard") {
@@ -253,3 +263,23 @@ wss.on("connection", (ws, req) => {
 server.listen(PORT, () => {
   console.log("Birdie Blitz server listening on port " + PORT);
 });
+
+// ============================================================================
+// KEEP-ALIVE: Render's free tier sleeps after ~15 min idle, and a cold restart
+// can wipe the in-memory/ephemeral-disk leaderboard. Pinging ourselves every
+// ~10 min keeps the instance awake so the board persists and the first open is
+// fast. Set RENDER_EXTERNAL_URL (Render provides it automatically) or it falls
+// back to localhost. Harmless if the URL isn't reachable.
+// ============================================================================
+const SELF_URL = process.env.RENDER_EXTERNAL_URL || ("http://127.0.0.1:" + PORT);
+const https = require("https");
+function keepAlive() {
+  try {
+    const url = SELF_URL.replace(/\/$/, "") + "/health";
+    const mod = url.startsWith("https") ? https : http;
+    const req = mod.get(url, (res) => { res.resume(); });
+    req.on("error", () => {});
+    req.setTimeout(8000, () => { try { req.destroy(); } catch {} });
+  } catch {}
+}
+setInterval(keepAlive, 10 * 60 * 1000);   // every 10 minutes
